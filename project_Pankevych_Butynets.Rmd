@@ -1,0 +1,224 @@
+---
+title: "R Research Project on Weather"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+```{r setup, include=FALSE}
+source("http://www.sthda.com/upload/rquery_cormat.r")
+library(corrplot)
+library(caret)
+library("fitdistrplus")
+```
+Team Composition:
+
+Pankevych Yevhen, Butynets Danylo
+
+## Aim of the Project
+We process the data of weather of certain town and try to build a model that detemines wheather the Humidity will be high based on the visibility, temperature and wind speed. Also, we try to determine the distribution of the Humidity.
+
+The data is taken from this site - https://www.kaggle.com/rtatman/datasets-for-regression-analysis. (2nd dataset)
+
+## Reading the Data
+
+```{r}
+weather = read.csv("weatherHistory.csv")
+
+# clean/remove some unnecessary text data
+weather[1] = NULL
+weather[1] = NULL
+weather[1] = NULL
+weather[9] = NULL
+weather[7] = NULL
+
+# For convinience, add one collum "Wet" that will take True or False
+weather$wet = weather$Humidity > 0.8
+summary(weather)
+```
+## Distribution of parameters based on Wet parameter and Best correlation 
+
+
+Start with linear regression
+Find some correlations in data
+
+```{r}
+rquery.cormat(weather)
+```
+
+```{r}
+ggplot(weather,aes(x=Wind.Speed..km.h.,fill=factor(wet)))+geom_density(alpha=0.5)+
+ xlab(label = "Wind Speed")+
+ ggtitle("Distribution of Wind Speed Levels")+
+ theme_minimal()
+
+ggplot(weather,aes(x=Visibility..km.,fill=factor(wet)))+geom_density(alpha=0.5)+
+ xlab(label = "Visibility")+
+ ggtitle("Distribution of Visibility Levels")+
+ theme_minimal()
+
+ggplot(weather,aes(x=Apparent.Temperature..C.,fill=factor(wet)))+geom_density(alpha=0.5)+
+ xlab(label = "Apparent Temperature (C*)")+
+ ggtitle("Distribution of Apparent Temperature Levels")+
+ theme_minimal()
+
+ggplot(weather,aes(x=Temperature..C.,fill=factor(wet)))+geom_density(alpha=0.5)+
+ xlab(label = "Temperature (C*)")+
+ ggtitle("Distribution of Temperature Levels")+
+ theme_minimal()
+```
+
+We can see correlation between Humidity and Temperature and Apparent. temperature, and also small correlation between Humidity and Visibility + Wind speed. But for our convinience we will use Wet instead of Humidity. Lets try calculating following and finding the best correlation:
+
+1. wet ~ Temperature + Apparent. temperature + Visibility + Wind speed
+2. wet ~ Temperature + Apparent. temperature + Visibility
+3. wet ~ Temperature + Apparent. temperature
+4. wet ~ Temperature
+
+```{r}
+summary(lm(wet~Temperature..C. + Apparent.Temperature..C. + Visibility..km. + 
+             Wind.Speed..km.h., data=weather))$r.squared
+summary(lm(wet~Temperature..C. + Apparent.Temperature..C. + Visibility..km., 
+           data=weather))$r.squared
+summary(lm(wet~Temperature..C. + Apparent.Temperature..C., 
+           data=weather))$r.squared
+summary(lm(wet~Temperature..C., data=weather))$r.squared
+```
+The best correlation for linear regression we got for all 4 features, so we can use them.
+
+
+## Training the model
+
+Now divide dataset to train and test data
+```{r}
+#weather$wet <- as.factor(weather$wet)
+train <- weather[1:85000, ]
+test <- weather[85001:96453,]
+```
+
+In fact, we will generate coefficients $\alpha_1\, \alpha_2, \alpha_3, \alpha_4$ for each feature (Temperature + Apparent. temperature + Visibility + Wind speed)
+Here we used dictret boolean values for "Wet" characteristic. Our model will be a simple classifier that by given observation of features (mentioned upper) will generate a classification, can this given observation belong to the "Wet" category.
+When predicting, our model will return a probability $P(wet = True | x_1,x_2,x_3,x_4)$, where $x_n$ - one feature.
+So we will take observation to be "Wet" if this probability >= 0.5
+
+```{r}
+model <- lm(wet ~ Temperature..C. + Apparent.Temperature..C. + 
+              Visibility..km. + Wind.Speed..km.h., data = train)
+summary(model)
+model$coefficients
+```
+
+
+And now we try to predict if it will be wet today:
+
+```{r}
+prediction <- predict.lm(model, newdata = test, type = 'response')
+prediction <- ifelse(prediction >= 0.5,TRUE,FALSE)
+result <- data.frame(prediction)
+
+# Take as factor only because we want to use confusionMatrix, which will calculate an accuracy
+result$prediction <- as.factor(result$prediction)
+test$wet <- as.factor(test$wet)
+
+confusionMatrix(result$prediction, test$wet)
+```
+Accuracy was calculated as 
+$ACC = \frac{TruePos + TrueNeg}{TestLength}$
+
+As we saw, it gives quite good results (73% of accuracy), and it beat No Information Rate - we created a model that can be used in real life!
+
+Now let's try finding some another linear dependency! As we saw on the correlation plot, we got some correlation between Visibility and (Hymidity, Temperature and Apparent. temp. and Wind.Speed.). Let's try predicting Visibility!
+
+```{r}
+summary(lm(Visibility..km. ~ Humidity + Temperature..C. + 
+             Apparent.Temperature..C. + Wind.Speed..km.h., data=weather))$r.squared
+```
+
+R square is quite small, but let's try
+
+```{r}
+model <- lm(Visibility..km. ~ Humidity + Temperature..C. + 
+              Apparent.Temperature..C. + Wind.Speed..km.h., data = train)
+summary(model)
+```
+
+
+In this case we created a model that do not classify, but rather try to estimate numeric value. So we need to find how big is correlation between test data and predicted.
+```{r}
+prediction <- predict(model, test)
+result <- data.frame(prediction)
+
+actuals_preds <- data.frame(cbind(actuals=test$Visibility..km., predicteds=result$prediction))
+correlation_accuracy <- cor(actuals_preds)
+
+correlation_accuracy
+```
+
+This time accuracy is not so good (about 50%). There are some reasons for it. Firstly this time we haven`t discritised our values (we used real numbers, but not TRUE/FALSE). Also we got small R squared value, so there was not so good correlation. But bad results are results too, so we understood that knowing humidity, temperatures and wind speed is not enough to predict visibility.
+
+## Finding the distribution of Humidity
+
+Now let`s perform some tests to discover a distribution of Humidity
+
+```{r}
+descdist(weather$Humidity)
+```
+
+As we see, our data`s skewness and kutorsis are between normal and uniform distributions.
+Let's try to fit them both
+
+First about normal distribution
+
+```{r}
+humidity.fit.norm = fitdist(weather$Humidity, "norm")
+plot(humidity.fit.norm)
+```
+
+And now about uniform
+
+```{r}
+humidity.fit.unif = fitdist(weather$Humidity, "unif")
+plot(humidity.fit.unif)
+```
+
+Now compare two aic values
+```{r}
+humidity.fit.norm$aic
+humidity.fit.unif$aic
+```
+
+
+As we see, data is likely to be normally distributed
+Now perform Kolmogorov-Smirnov test for both normal and uniform distributions, just to make sure that it is more likely for data to be normally distributed. We will perform 2 tests, with $H_0$ that will be "data is normally/uniformly distributed" (or in terms of Kolmogorov-Smirnov that data`s ecdf is close enough to the cdf of corresponding distribution) and $H_1$ that "data is not normally/uniformly distributed".
+
+```{r}
+ks.test(weather$Humidity, "pnorm", mean(weather$Humidity), sd(weather$Humidity))
+ks.test(weather$Humidity, "punif")
+```
+
+```{r}
+x <- rnorm(length(weather$Humidity), mean=mean(weather$Humidity), sd=sd(weather$Humidity))
+pts <- seq(-1,max(x),by=0.01)
+plot(ecdf(weather$Humidity),col="darkblue")
+lines(pts, pnorm(pts, mean=mean(weather$Humidity), sd=sd(weather$Humidity)), col="red")
+
+maxDiff = max(pnorm(pts, mean=mean(weather$Humidity),
+                    sd=sd(weather$Humidity))-ecdf(weather$Humidity)(pts))
+cat("Maximal difference between ecdf and cdf: ", maxDiff, "\n")
+```
+
+```{r}
+x <- runif(length(weather$Humidity))
+pts <- seq(-1,max(x),by=0.01)
+plot(ecdf(weather$Humidity),col="darkblue")
+lines(pts, punif(pts), col="red")
+
+maxDiff = max(punif(pts) - ecdf(weather$Humidity)(pts))
+cat("Maximal difference between ecdf and cdf: ", maxDiff, "\n")
+```
+
+However D value (absolute max distance between the CDFs of the two samples, which is calculated as $D_n = sup_x|F_n(x) - F(x)|$ where $F_n(x)$ is ecdf from data and $F(x)$ is cdf of concrete distribution) of first test is quite small (0.1) and smaller than from the second test, but as p value is almost 0, we can't say that data is totally normally distributed. However it's ecdf is close to the normal cdf, so we can assume that this data`s distribution is quite close to normal one.
+
+
+## Conclusions
+We tried to use not a single approach to the data, and tried to make to models instead of one. The second one didn't result to be accurate, but despite failing here, we analyzed data from multiple perspectives. Despite that, the first model we made is having pretty high accuracy and we also managed to determine the distribution of the Humidity. Overall, we consider this project as a successfil one.
